@@ -51,23 +51,35 @@ for (const cc of CC) {
 console.log(`storefronts answered: ${ok}/${CC.length}, apps seen: ${Object.keys(by).length}`);
 if (ok < CC.length / 2) { console.error("Too many storefronts failed; keeping the previous snapshot."); process.exit(1); }
 
-// 3) newest written reviews from each rated app's top 3 storefronts (public RSS)
+// 3) written reviews from every storefront where the app has ratings (public RSS, newest first;
+//    up to 10 pages of 50 per storefront), kept per app up to MAX_REVIEWS
+const MAX_REVIEWS = 150;
 const rv = {};
 for (const [id, a] of Object.entries(by)) {
-  const top = Object.entries(a.cc).sort((x, y) => y[1][1] - x[1][1]).slice(0, 3).map(x => x[0]);
+  const stores = Object.entries(a.cc).sort((x, y) => y[1][1] - x[1][1]).map(x => x[0]);
   const list = [];
-  for (const cc of top) {
-    const j = await getJSON(`https://itunes.apple.com/${cc}/rss/customerreviews/page=1/id=${id}/sortby=mostrecent/json`);
-    let en = j?.feed?.entry; if (!en) { await sleep(1200); continue; }
-    if (!Array.isArray(en)) en = [en];
-    for (const x of en) {
-      if (!x["im:rating"]) continue;
-      list.push({ s: +x["im:rating"].label || 0, t: x.title?.label || "", b: String(x.content?.label || "").slice(0, 500),
-        u: x.author?.name?.label || "", d: String(x.updated?.label || "").slice(0, 10), c: cc.toUpperCase() });
+  const seen = new Set();
+  for (const cc of stores) {
+    for (let page = 1; page <= 10; page++) {
+      const j = await getJSON(`https://itunes.apple.com/${cc}/rss/customerreviews/page=${page}/id=${id}/sortby=mostrecent/json`);
+      let en = j?.feed?.entry;
+      await sleep(1200);
+      if (!en) break;
+      if (!Array.isArray(en)) en = [en];
+      let added = 0;
+      for (const x of en) {
+        if (!x["im:rating"]) continue;
+        const rid = x.id?.label || `${cc}-${x.updated?.label}-${x.author?.name?.label}`;
+        if (seen.has(rid)) continue;
+        seen.add(rid);
+        added++;
+        list.push({ s: +x["im:rating"].label || 0, t: x.title?.label || "", b: String(x.content?.label || "").slice(0, 1500),
+          u: x.author?.name?.label || "", d: String(x.updated?.label || "").slice(0, 10), c: cc.toUpperCase(), v: x["im:version"]?.label || "" });
+      }
+      if (en.length < 50 || !added) break; // last page
     }
-    await sleep(1200);
   }
-  if (list.length) rv[id] = list.sort((x, y) => (x.d < y.d ? 1 : x.d > y.d ? -1 : 0)).slice(0, 20);
+  if (list.length) rv[id] = list.sort((x, y) => (x.d < y.d ? 1 : x.d > y.d ? -1 : 0)).slice(0, MAX_REVIEWS);
 }
 const rated = Object.values(by).filter(a => Object.keys(a.cc).length).length;
 console.log(`apps with ratings: ${rated}, apps with written reviews: ${Object.keys(rv).length}`);
